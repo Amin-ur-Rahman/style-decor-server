@@ -41,9 +41,10 @@ const runDB = async () => {
     app.post("/users", async (req, res) => {
       try {
         const userData = req.body;
+        userData.createAt = new Date();
 
         const searchDuplicate = await usersColl.findOne({
-          userEmail: userData.email,
+          userEmail: userData.userEmail,
         });
         if (searchDuplicate)
           return res.send({ message: "user already exists" });
