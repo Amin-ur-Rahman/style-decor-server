@@ -5,6 +5,9 @@ const express = require("express");
 const admin = require("firebase-admin");
 const serviceAccount = require("./styledecor-firebase-adminsdk.json");
 
+// stripe setup
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -13,8 +16,6 @@ const app = express();
 const cors = require("cors");
 const port = process.env.PORT || 3000;
 
-console.log("DB_USER:", process.env.DB_USER);
-console.log("DB_PASS:", process.env.DB_PASS);
 // mongo client
 const client = new MongoClient(uri, {
   serverApi: {
@@ -55,6 +56,7 @@ app.get("/", (req, res) => {
   res.send("STYLEDECOR -- Server Connected");
 });
 
+// mongo db starts here--------------------
 const runDB = async () => {
   try {
     await client.connect();
@@ -208,6 +210,37 @@ const runDB = async () => {
         res.status(500).send({ message: "Server error" });
         console.error(error);
       }
+    });
+
+    // stripe api ------------------------
+
+    app.post("/create-checkout-session", async (req, res) => {
+      const bookingData = req.body;
+      const amount = parseInt(bookingData.payableAmount) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "bdt",
+              product_data: {
+                name: bookingData.serviceName,
+              },
+              unit_amount: amount,
+            },
+            quantity: 1,
+          },
+        ],
+        metadata: {
+          bookingId: bookingData._id,
+          serviceName: bookingData.serviceName,
+        },
+        mode: "payment",
+        success_url: `${process.env.CLIENT_URL}/dashboard/on-payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_URL}/dashboard/on-payment-cancel`,
+      });
+
+      res.send({ url: session.url });
+      console.log(session.url);
     });
 
     // -------------service centers api------------------
