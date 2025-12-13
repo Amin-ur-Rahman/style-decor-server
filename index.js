@@ -1,7 +1,13 @@
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ix21m2z.mongodb.net/?appName=Cluster0`;
 const express = require("express");
+const admin = require("firebase-admin");
+const serviceAccount = require("./styledecor-firebase-adminsdk.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const app = express();
 const cors = require("cors");
@@ -23,6 +29,28 @@ const client = new MongoClient(uri, {
 app.use(cors());
 app.use(express.json());
 
+const verifyFBToken = async (req, res, next) => {
+  const authHeader = await req.headers.authorization;
+  // console.log("access token", token);
+
+  if (!authHeader) {
+    return res.status(403).send({
+      message: "unauthorized access! stay away from making such request",
+    });
+  }
+
+  try {
+    const token = authHeader.split(" ")[1];
+    // console.log("access token-------", token);
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.decoded_email = decoded.email;
+
+    next();
+  } catch (err) {
+    res.status(501).send({ message: "unauthorized access" });
+  }
+};
+
 app.get("/", (req, res) => {
   res.send("STYLEDECOR -- Server Connected");
 });
@@ -38,6 +66,8 @@ const runDB = async () => {
 
     const usersColl = db.collection("users");
     const serviceColl = db.collection("services");
+    const serviceCentersColl = db.collection("ServiceCenters");
+    const bookingColl = db.collection("bookings");
 
     // USERS collection api
     app.post("/users", async (req, res) => {
@@ -60,13 +90,78 @@ const runDB = async () => {
       }
     });
 
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyFBToken, async (req, res) => {
       try {
         const userData = await usersColl.find().toArray();
         res.send(userData);
       } catch (error) {
         console.error(error);
         res.status(404).send({ message: "data not found" });
+      }
+    });
+
+    app.get("/me", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const userData = await usersColl.findOne({ userEmail: email });
+        if (!userData) {
+          return res.status(403).send({ message: "Forbidden request! 💀" });
+        }
+        res.send(userData);
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
+        console.error(error);
+      }
+    });
+
+    // ------------booking api---------------
+
+    app.post("/booking", verifyFBToken, async (req, res) => {
+      try {
+        const bookingInfo = req.body;
+        const bookedService = await serviceColl.findOne({
+          _id: new ObjectId(bookingInfo.serviceId),
+        });
+        if (!bookedService) {
+          return res.status(404).send({
+            message: "Service not found, maybe it is not active anymore",
+          });
+        }
+
+        const unitPrice = parseFloat(bookedService.cost);
+        const quantity = parseFloat(bookingInfo.quantity);
+
+        if (isNaN(quantity) || quantity <= 0) {
+          return res.status(400).send({ message: "inavlid unit format!" });
+        }
+        bookingInfo.payableAmount = unitPrice * quantity;
+        bookingInfo.unitPrice = unitPrice;
+
+        const insertData = await bookingColl.insertOne(bookingInfo);
+        if (!insertData.insertedId) {
+          return res.status(400).send({ message: "failed to insert data" });
+        }
+        res.send(insertData);
+        console.log(insertData);
+      } catch (error) {
+        res.status(500).send({ message: "server error: insertion failed" });
+        console.error(error);
+      }
+    });
+
+    app.get("/bookings", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.query.userEmail;
+        const bookings = await bookingColl
+          .find({ bookedByEmail: email })
+          .toArray();
+        if (bookings.length === 0) {
+          return res.status(404).send({ message: "no data found" });
+        }
+        res.send(bookings);
+      } catch (error) {
+        res.status(500).send({ message: "server error" });
+        console.error(error);
       }
     });
 
@@ -87,13 +182,45 @@ const runDB = async () => {
       }
     });
 
-    app.get("/services", async (req, res) => {
+    app.get("/services", verifyFBToken, async (req, res) => {
       try {
         const result = await serviceColl.find().toArray();
         return res.send(result);
       } catch (error) {
         res.status(500).send({ message: "server internal error" });
         console.error(error);
+      }
+    });
+
+    app.get("/service/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid object ID" });
+        }
+
+        const result = await serviceColl.findOne({ _id: new ObjectId(id) });
+        if (!result) {
+          return res.status(404).send({ message: "service not found" });
+        }
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
+        console.error(error);
+      }
+    });
+
+    // -------------service centers api------------------
+
+    app.get("/service-centers", async (req, res) => {
+      try {
+        const result = await serviceCentersColl.find().toArray();
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .send({ message: "Server failed to load service-center data" });
       }
     });
 
