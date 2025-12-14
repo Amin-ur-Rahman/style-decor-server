@@ -199,6 +199,7 @@ const runDB = async () => {
 
         const paymentData = await paymentColl.find().toArray();
         res.send(paymentData);
+        ``;
       } catch (error) {
         res.status(500).send({ message: "server error" });
         console.error(error);
@@ -226,6 +227,7 @@ const runDB = async () => {
           amountPaid: session.amount_total,
           currency: session.currency,
           paymentStatus: session.payment_status,
+          serviceName: session.metadata.serviceName,
           paid_at: new Date(),
         };
         const paymentExists = await paymentColl.findOne({
