@@ -72,7 +72,7 @@ const runDB = async () => {
     const bookingColl = db.collection("bookings");
     const paymentColl = db.collection("paymentsHistory");
 
-    // indexing----------
+    // indexing----------duplication protection
 
     paymentColl.createIndex(
       { bookingId: 1, transactionId: 1 },
@@ -112,8 +112,12 @@ const runDB = async () => {
 
     app.get("/me", verifyFBToken, async (req, res) => {
       try {
-        const email = req.decoded_email;
-        const userData = await usersColl.findOne({ userEmail: email });
+        const userEmail = req.query.userEmail;
+        const decoded_email = req.decoded_email;
+        if (userEmail !== decoded_email) {
+          return res.status(403).send({ message: "Forbidden request" });
+        }
+        const userData = await usersColl.findOne({ userEmail: decoded_email });
         if (!userData) {
           return res.status(403).send({ message: "Forbidden request! 💀" });
         }
@@ -165,6 +169,11 @@ const runDB = async () => {
     app.get("/bookings", verifyFBToken, async (req, res) => {
       try {
         const email = req.query.email;
+
+        const decoded_email = req.decoded_email;
+        if (email !== decoded_email) {
+          return res.status(403).send({ message: "Forbidden request" });
+        }
         const bookings = await bookingColl
           .find({ bookedByEmail: email })
           .toArray();
@@ -177,6 +186,26 @@ const runDB = async () => {
         console.error(error);
       }
     });
+
+    // -----------payment history related api
+
+    app.get("/payments", verifyFBToken, async (req, res) => {
+      try {
+        const userEmail = req.query.userEmail;
+        const decoded_email = req.decoded_email;
+        if (userEmail !== decoded_email) {
+          return res.status(403).send({ message: "forbidden request" });
+        }
+
+        const paymentData = await paymentColl.find().toArray();
+        res.send(paymentData);
+      } catch (error) {
+        res.status(500).send({ message: "server error" });
+        console.error(error);
+      }
+    });
+
+    // --------------------on payment success------------booking data update, payment data entry
 
     app.patch("/on-payment-success", async (req, res) => {
       try {
@@ -199,10 +228,18 @@ const runDB = async () => {
           paymentStatus: session.payment_status,
           paid_at: new Date(),
         };
+        const paymentExists = await paymentColl.findOne({
+          bookingId: session.metadata.bookingId,
+          transactionId: session.payment_intent,
+        });
 
-        const paymentInsertedResult = await paymentColl.insertOne(paymentData);
-        if (!paymentInsertedResult.insertedId) {
-          return res.send({ message: "Payment data insertion failed!" });
+        if (!paymentExists) {
+          const paymentInsertedResult = await paymentColl.insertOne(
+            paymentData
+          );
+          if (!paymentInsertedResult.insertedId) {
+            return res.send({ message: "Payment data insertion failed!" });
+          }
         }
 
         const alreadyPaid = await bookingColl.findOne({
