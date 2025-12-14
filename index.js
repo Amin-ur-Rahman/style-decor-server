@@ -70,6 +70,14 @@ const runDB = async () => {
     const serviceColl = db.collection("services");
     const serviceCentersColl = db.collection("ServiceCenters");
     const bookingColl = db.collection("bookings");
+    const paymentColl = db.collection("paymentsHistory");
+
+    // indexing----------
+
+    paymentColl.createIndex(
+      { bookingId: 1, transactionId: 1 },
+      { unique: true }
+    );
 
     // USERS collection api
     app.post("/users", async (req, res) => {
@@ -136,8 +144,11 @@ const runDB = async () => {
         if (isNaN(quantity) || quantity <= 0) {
           return res.status(400).send({ message: "inavlid unit format!" });
         }
-        bookingInfo.payableAmount = unitPrice * quantity;
-        bookingInfo.unitPrice = unitPrice;
+
+        bookingInfo.payableAmount =
+          bookingInfo.bookingType === "decoration" ? unitPrice * quantity : 0;
+        bookingInfo.unitPrice =
+          bookingInfo.bookingType === "decoration" ? unitPrice : 0;
 
         const insertData = await bookingColl.insertOne(bookingInfo);
         if (!insertData.insertedId) {
@@ -153,7 +164,7 @@ const runDB = async () => {
 
     app.get("/bookings", verifyFBToken, async (req, res) => {
       try {
-        const email = req.query.userEmail;
+        const email = req.query.email;
         const bookings = await bookingColl
           .find({ bookedByEmail: email })
           .toArray();
@@ -163,6 +174,72 @@ const runDB = async () => {
         res.send(bookings);
       } catch (error) {
         res.status(500).send({ message: "server error" });
+        console.error(error);
+      }
+    });
+
+    app.patch("/on-payment-success", async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        if (!sessionId) {
+          return res.status(400).send({ message: "invalid request" });
+        }
+
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.payment_status !== "paid") {
+          return res.send({ message: "Invalid request" });
+        }
+
+        const paymentData = {
+          bookingId: session.metadata.bookingId,
+          clientEmail: session.customer_email,
+          transactionId: session.payment_intent,
+          amountPaid: session.amount_total,
+          currency: session.currency,
+          paymentStatus: session.payment_status,
+          paid_at: new Date(),
+        };
+
+        const paymentInsertedResult = await paymentColl.insertOne(paymentData);
+        if (!paymentInsertedResult.insertedId) {
+          return res.send({ message: "Payment data insertion failed!" });
+        }
+
+        const alreadyPaid = await bookingColl.findOne({
+          transactionId: session.payment_intent,
+        });
+
+        if (alreadyPaid) {
+          return;
+        }
+        const bookingId = session.metadata.bookingId;
+
+        const query = { _id: new ObjectId(bookingId) };
+        const update = {
+          $set: {
+            status: "confirmed",
+            paymentStatus: session.payment_status,
+            transactionId: session.payment_intent,
+            amountPaid: session.amount_total,
+          },
+        };
+
+        const updateBooking = await bookingColl.updateOne(query, update);
+        if (updateBooking.matchedCount === 0) {
+          return res.status(404).send({ message: "Booking not found" });
+        }
+
+        res.send({
+          updateInfo: updateBooking,
+          transactionId: session.payment_intent,
+          paymentInsertedResult,
+        });
+        console.log(session);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: "server error: payment update failed" });
+
         console.error(error);
       }
     });
@@ -234,6 +311,7 @@ const runDB = async () => {
           bookingId: bookingData._id,
           serviceName: bookingData.serviceName,
         },
+        customer_email: bookingData.bookedByEmail,
         mode: "payment",
         success_url: `${process.env.CLIENT_URL}/dashboard/on-payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_URL}/dashboard/on-payment-cancel`,
