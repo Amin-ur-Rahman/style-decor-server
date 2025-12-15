@@ -32,7 +32,7 @@ const client = new MongoClient(uri, {
 // middlewares
 
 app.use(cors());
-app.options("/*", cors());
+
 app.use(express.json());
 
 const verifyFBToken = async (req, res, next) => {
@@ -386,6 +386,4 @@ const runDB = async () => {
 };
 runDB();
 
-app.listen(port, () => {
-  console.log("styleDecor is running at port:", port);
-});
+export default app;
