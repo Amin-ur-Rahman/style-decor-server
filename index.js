@@ -386,4 +386,6 @@ const runDB = async () => {
 };
 runDB();
 
-export default app;
+app.listen(port, () => {
+  console.log("styleDecor is running at port:", port);
+});
