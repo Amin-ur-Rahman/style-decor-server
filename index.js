@@ -76,13 +76,20 @@ const runDB = async () => {
     const serviceCentersColl = db.collection("ServiceCenters");
     const bookingColl = db.collection("bookings");
     const paymentColl = db.collection("paymentsHistory");
+    const decoratorColl = db.collection("decorators");
 
     // indexing----------duplication protection
 
-    paymentColl.createIndex(
+    await paymentColl.createIndex(
       { bookingId: 1, transactionId: 1 },
       { unique: true }
     );
+
+    await decoratorColl.createIndex({ decoratorEmail: 1 }, { unique: true });
+
+    decoratorColl.createIndex({ applicationStatus: 1 });
+    decoratorColl.createIndex({ isAvailable: 1 });
+    decoratorColl.createIndex({ "serviceLocation.city": 1 });
 
     // USERS collection api
     app.post("/users", async (req, res) => {
@@ -117,11 +124,8 @@ const runDB = async () => {
 
     app.get("/me", verifyFBToken, async (req, res) => {
       try {
-        const userEmail = req.query.userEmail;
         const decoded_email = req.decoded_email;
-        if (userEmail !== decoded_email) {
-          return res.status(403).send({ message: "Forbidden request" });
-        }
+
         const userData = await usersColl.findOne({ userEmail: decoded_email });
         if (!userData) {
           return res.status(403).send({ message: "Forbidden request! 💀" });
@@ -130,6 +134,42 @@ const runDB = async () => {
       } catch (error) {
         res.status(500).send({ message: "Server error" });
         console.error(error);
+      }
+    });
+
+    // decorator api------------decorator api---------decorator api-------------------decorator api---------
+
+    app.post("/decorators", async (req, res) => {
+      try {
+        const applicationInfo = req.body;
+        // console.log(applicationInfo.decoratorEmail);
+
+        const alreadyExists = await decoratorColl.findOne({
+          decoratorEmail: applicationInfo.decoratorEmail,
+        });
+        if (alreadyExists) {
+          return res.send({ message: "Decorator accounts already exists" });
+        }
+        const postDecoResult = await decoratorColl.insertOne(applicationInfo);
+        if (!postDecoResult.insertedId) {
+          return res
+            .status(400)
+            .send({ message: "bad request, operation failed" });
+        }
+        res.send(postDecoResult);
+        console.log(postDecoResult);
+      } catch (error) {
+        res.send(500).send({ message: "server error" });
+      }
+    });
+
+    app.get("/decorators", async (req, res) => {
+      try {
+        const decorators = await decoratorColl.find().toArray();
+        res.send(decorators);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "server error" });
       }
     });
 
@@ -305,10 +345,10 @@ const runDB = async () => {
       }
     });
 
-    app.get("/services", verifyFBToken, async (req, res) => {
+    app.get("/services", async (req, res) => {
       try {
         const result = await serviceColl.find().toArray();
-        return res.send(result);
+        res.send(result);
       } catch (error) {
         res.status(500).send({ message: "server internal error" });
         console.error(error);
