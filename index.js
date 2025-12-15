@@ -17,7 +17,6 @@ admin.initializeApp({
 
 const app = express();
 const cors = require("cors");
-app.options("*", cors());
 
 const port = process.env.PORT || 3000;
 
@@ -33,6 +32,7 @@ const client = new MongoClient(uri, {
 // middlewares
 
 app.use(cors());
+app.options("/*", cors());
 app.use(express.json());
 
 const verifyFBToken = async (req, res, next) => {
@@ -53,7 +53,7 @@ const verifyFBToken = async (req, res, next) => {
 
     next();
   } catch (err) {
-    res.status(501).send({ message: "unauthorized access" });
+    res.status(403).send({ message: "unauthorized access" });
   }
 };
 
@@ -204,7 +204,6 @@ const runDB = async () => {
 
         const paymentData = await paymentColl.find().toArray();
         res.send(paymentData);
-        ``;
       } catch (error) {
         res.status(500).send({ message: "server error" });
         console.error(error);
@@ -254,8 +253,9 @@ const runDB = async () => {
         });
 
         if (alreadyPaid) {
-          return;
+          return res.send({ message: "Already processed" });
         }
+
         const bookingId = session.metadata.bookingId;
 
         const query = { _id: new ObjectId(bookingId) };
