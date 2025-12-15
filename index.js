@@ -66,10 +66,10 @@ const runDB = async () => {
   try {
     await client.connect();
     const db = client.db("style_decor");
-    await db.command({ ping: 1 });
-    console.log(
-      "Pinged the deployment. You successfully connected to MongoDB!"
-    );
+    // await db.command({ ping: 1 });
+    // console.log(
+    //   "Pinged the deployment. You successfully connected to MongoDB!"
+    // );
 
     const usersColl = db.collection("users");
     const serviceColl = db.collection("services");
