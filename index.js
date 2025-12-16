@@ -163,9 +163,19 @@ const runDB = async () => {
       }
     });
 
-    app.get("/decorators", async (req, res) => {
+    app.get("/decorators", verifyFBToken, async (req, res) => {
       try {
-        const decorators = await decoratorColl.find().toArray();
+        const { applicationStatus, city } = req.query;
+        const isAvailable = true;
+        const query =
+          Object.keys(req.query).length === 0
+            ? {}
+            : { applicationStatus, isAvailable, "serviceLocation.city": city };
+
+        const decorators = await decoratorColl.find(query).toArray();
+        if (decorators.length === 0) {
+          return res.status(404).send({ message: "no data found" });
+        }
         res.send(decorators);
       } catch (error) {
         console.error(error);
@@ -233,6 +243,68 @@ const runDB = async () => {
       }
     });
 
+    // -------- on assigning decorators
+
+    app.patch("/decorator/:id/assignment", verifyFBToken, async (req, res) => {
+      try {
+        const decoId = req.params.id;
+        const bookingId = req.body.bookingId;
+
+        if (!decoId || !bookingId) {
+          return res.status(400).send({ message: "Invalid request" });
+        }
+
+        const decoUpdate = {
+          $set: {
+            isAvailable: false,
+            currentBookingId: bookingId,
+            updatedAt: new Date(),
+          },
+        };
+
+        const resultDeco = await decoratorColl.updateOne(
+          { _id: new ObjectId(decoId) },
+          decoUpdate
+        );
+
+        const bookingUpdate = {
+          $set: {
+            assignedDecoratorId: decoId,
+            status: "assigned",
+            assignedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        };
+
+        const resultBooking = await bookingColl.updateOne(
+          { _id: new ObjectId(bookingId) },
+          bookingUpdate
+        );
+
+        if (resultDeco.matchedCount === 0) {
+          return res.status(404).send({ message: "no matching data found" });
+        }
+        if (resultDeco.modifiedCount === 0) {
+          return res.status(400).send({ message: "No changes were applied" });
+        }
+        if (resultBooking.matchedCount === 0) {
+          return res.status(404).send({ message: "no matching data found" });
+        }
+        if (resultBooking.modifiedCount === 0) {
+          return res.status(400).send({ message: "No changes were applied" });
+        }
+
+        res.send({
+          decoratorUpdate: `This decorator has been assigned to booking no. ${bookingId}`,
+          bookingUpdate: "This booking has been assigned",
+        });
+        console.log(resultBooking, resultDeco);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
     // ------------booking api---------------
 
     app.post("/booking", verifyFBToken, async (req, res) => {
@@ -265,6 +337,19 @@ const runDB = async () => {
         }
         res.send(insertData);
         console.log(insertData);
+      } catch (error) {
+        res.status(500).send({ message: "server error: insertion failed" });
+        console.error(error);
+      }
+    });
+
+    app.get("/bookings/admin", verifyFBToken, async (req, res) => {
+      try {
+        const allBookings = await bookingColl.find().toArray();
+        if (allBookings.length === 0) {
+          return res.status(404).send({ message: "no data found" });
+        }
+        res.send(allBookings);
       } catch (error) {
         res.status(500).send({ message: "server error: insertion failed" });
         console.error(error);
