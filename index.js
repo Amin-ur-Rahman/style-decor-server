@@ -173,6 +173,66 @@ const runDB = async () => {
       }
     });
 
+    app.patch("/decorator/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { applicationStatus } = req.body;
+        console.log(applicationStatus);
+
+        if (applicationStatus === "rejected") {
+          const updateField = {
+            $set: {
+              applicationStatus: applicationStatus,
+              isVerified: false,
+            },
+          };
+          const rejectedRes = await decoratorColl.updateOne(
+            { _id: new ObjectId(id) },
+            updateField
+          );
+          if (rejectedRes.matchedCount === 0) {
+            return res.send({ message: "No query matched, failed to update" });
+          }
+          return res.send({ message: "Application rejected", rejectedRes });
+        }
+
+        const result = await decoratorColl.updateOne(
+          { _id: new ObjectId(id), applicationStatus: "pending" },
+          {
+            $set: {
+              applicationStatus: "approved",
+              isVerified: true,
+              approvedAt: new Date(),
+            },
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: "Decorator not found or already processed" });
+        }
+
+        const { userId } = req.body;
+        const updateFieldUser = {
+          $set: {
+            role: "decorator",
+          },
+        };
+
+        const userRoleUpdateRes = await usersColl.updateOne(
+          { _id: new ObjectId(userId) },
+          updateFieldUser
+        );
+        console.log(userRoleUpdateRes);
+
+        res.send({ result, userRoleUpdateRes });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
     // ------------booking api---------------
 
     app.post("/booking", verifyFBToken, async (req, res) => {
