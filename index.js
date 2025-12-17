@@ -692,6 +692,16 @@ const runDB = async () => {
 };
 runDB();
 
-app.listen(port, () => {
-  console.log("styleDecor is running at port:", port);
-});
+// app.listen(port, () => {
+//   console.log("styleDecor is running at port:", port);
+// });
+
+// Keep your existing app.listen for local development
+if (process.env.NODE_ENV !== "production") {
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+  });
+}
+
+// Export the app for Vercel
+module.exports = app;
