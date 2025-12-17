@@ -207,7 +207,12 @@ const runDB = async () => {
         }
 
         const result = await decoratorColl.updateOne(
-          { _id: new ObjectId(id), applicationStatus: "pending" },
+          {
+            _id: new ObjectId(id),
+            applicationStatus: {
+              $in: ["pending", "rejected"],
+            },
+          },
           {
             $set: {
               applicationStatus: "approved",
@@ -304,6 +309,38 @@ const runDB = async () => {
         res.status(500).send({ message: "Server error" });
       }
     });
+
+    // -------on confirming consultation---------
+
+    app.patch(
+      "/consultation/:bookingId/update",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const id = req.params.bookingId;
+          const { status, bookingType } = req.body;
+          if (!id || bookingType !== "consultation") {
+            return res.status(403).send({ message: "invalid request" });
+          }
+          const updateFields = {
+            $set: {
+              status: status,
+              updatedAt: new Date(),
+            },
+          };
+          const result = await bookingColl.updateOne(
+            { _id: new ObjectId(id) },
+            updateFields
+          );
+
+          res.send(result);
+          console.log(result);
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
+        }
+      }
+    );
 
     // ------------booking api---------------
 
