@@ -1,9 +1,8 @@
 require("dotenv").config();
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ix21m2z.mongodb.net/?appName=Cluster0`;
 const express = require("express");
+const cors = require("cors");
 const admin = require("firebase-admin");
-
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 // stripe setup
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
@@ -12,14 +11,18 @@ const decoded = Buffer.from(process.env.FB_SECRET_KEY, "base64").toString(
 );
 const serviceAccount = JSON.parse(decoded);
 
+const app = express();
+const port = process.env.PORT || 3000;
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-const app = express();
-const cors = require("cors");
+// middlewares
+app.use(cors());
+app.use(express.json());
 
-const port = process.env.PORT || 3000;
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ix21m2z.mongodb.net/?appName=Cluster0`;
 
 // mongo client
 const client = new MongoClient(uri, {
@@ -29,12 +32,6 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
-
-// middlewares
-
-app.use(cors());
-
-app.use(express.json());
 
 const verifyFBToken = async (req, res, next) => {
   const authHeader = await req.headers.authorization;
@@ -58,20 +55,16 @@ const verifyFBToken = async (req, res, next) => {
   }
 };
 
-app.get("/", (req, res) => {
-  res.send("STYLEDECOR -- Server Connected");
-});
-
 // mongo db starts here--------------------
 const runDB = async () => {
   try {
-    await client.connect();
-    const db = client.db("style_decor");
+    // await client.connect()
     // await db.command({ ping: 1 });
     // console.log(
     //   "Pinged the deployment. You successfully connected to MongoDB!"
     // );
 
+    const db = client.db("style_decor");
     const usersColl = db.collection("users");
     const serviceColl = db.collection("services");
     const serviceCentersColl = db.collection("ServiceCenters");
@@ -691,6 +684,10 @@ const runDB = async () => {
   }
 };
 runDB().catch(console.dir);
+
+app.get("/", (req, res) => {
+  res.send("STYLEDECOR -- Server Connected");
+});
 
 app.listen(port, () => {
   console.log("styleDecor is running at port:", port);
