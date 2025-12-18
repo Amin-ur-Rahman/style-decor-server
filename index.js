@@ -148,9 +148,9 @@ const runDB = async () => {
             .find({ assignedDecoratorId: decoId })
             .toArray();
           if (bookings.length === 0) {
-            return res.status(404).send({ message: "no data found" });
+            return res.send({ message: "no data found" });
           }
-          res.send(bookings);
+          res.send(bookings || []);
         } catch (error) {
           res.status(500).send({ message: "Server error" });
           console.error(error);
@@ -158,9 +158,179 @@ const runDB = async () => {
       }
     );
 
+    // --------booking status management by assigned decorator-----------------------
+
+    app.patch("/booking/status/flow", verifyFBToken, async (req, res) => {
+      try {
+        const patchData = req.body;
+        const { nextBookingStatus, updatedAt, decoratorId, bookingId } =
+          patchData;
+        // on completion a project---------
+
+        // ------------------------
+        // console.log(patchData);
+        const updateField = {
+          $set: {
+            status: nextBookingStatus,
+            updatedAt: updatedAt,
+          },
+        };
+
+        const updateRes = await bookingColl.updateOne(
+          { _id: new ObjectId(bookingId) },
+          updateField
+        );
+
+        if (nextBookingStatus === "completed") {
+          const decoUpField = {
+            $set: {
+              isAvailable: true,
+            },
+            $unset: {
+              currentBookingId: "",
+            },
+            $push: {
+              finishedProjectIDs: bookingId,
+            },
+          };
+          const decoDataUpdate = await decoratorColl.updateOne(
+            {
+              _id: new ObjectId(decoratorId),
+            },
+            decoUpField
+          );
+          console.log(decoDataUpdate);
+        }
+
+        res.send({ message: "Booking Status updated", updateRes });
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
+        console.error(error);
+      }
+    });
+
+    // if -------if booking rejected by decorator-----------------------
+
+    app.patch(
+      "/booking/reject-by-decorator",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const { bookingId, decoratorId } = req.body;
+
+          if (!bookingId || !decoratorId) {
+            return res
+              .status(400)
+              .send({ message: "bookingId and decoratorId are required" });
+          }
+          console.log(bookingId, decoratorId);
+
+          // Update booking
+          const bookingUpdate = await bookingColl.updateOne(
+            {
+              _id: new ObjectId(bookingId),
+              assignedDecoratorId: decoratorId,
+            },
+            {
+              $set: {
+                status: "awaiting-reassignment",
+                updatedAt: new Date(),
+              },
+              $push: {
+                rejectedBy: decoratorId,
+              },
+              $unset: {
+                assignedDecoratorId: "",
+                assignedAt: "",
+              },
+            }
+          );
+
+          if (bookingUpdate.matchedCount === 0) {
+            return res
+              .status(404)
+              .send({ message: "Booking not found or decorator mismatch" });
+          }
+
+          // Update decorator
+          const decoratorUpdate = await decoratorColl.updateOne(
+            { _id: new ObjectId(decoratorId) },
+            {
+              $set: { isAvailable: true },
+              $unset: { currentBookingId: "" },
+            }
+          );
+
+          if (decoratorUpdate.matchedCount === 0) {
+            return res.status(404).send({ message: "Decorator not found" });
+          }
+
+          res.send(
+            {
+              message:
+                "Project rejected by decorator. Booking ready for reassignment.",
+            },
+            decoratorUpdate,
+            bookingUpdate
+          );
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
+        }
+      }
+    );
+
+    // -----------after project completed-------sending the list of completed project data-----------
+    // -----------after project completed-------sending the list of completed project data-----------
+
+    app.get(
+      "/booking-data/:decoId/completed",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const decoId = req.params.decoId;
+
+          if (!decoId) {
+            return res.status(400).send({ message: "Invalid decorator ID" });
+          }
+
+          if (!ObjectId.isValid(decoId)) {
+            return res
+              .status(400)
+              .send({ message: "Invalid decorator ID format" });
+          }
+
+          const decoData = await decoratorColl.findOne({
+            _id: new ObjectId(decoId),
+          });
+
+          if (!decoData) {
+            return res.send({ message: "Decorator not found" });
+          }
+
+          const completedProjectIDs = decoData.finishedProjectIDs || [];
+
+          if (completedProjectIDs.length === 0) {
+            return res.send({ message: "No completed projects" });
+          }
+
+          const completedProjects = await bookingColl
+            .find({
+              _id: { $in: completedProjectIDs.map((id) => new ObjectId(id)) },
+            })
+            .toArray();
+
+          res.send(completedProjects);
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
+        }
+      }
+    );
+
     // decorator api------------decorator api---------decorator api-------------------decorator api---------
 
-    app.post("/decorators", async (req, res) => {
+    app.post("/decorators", verifyFBToken, async (req, res) => {
       try {
         const applicationInfo = req.body;
         // console.log(applicationInfo.decoratorEmail);
@@ -186,17 +356,24 @@ const runDB = async () => {
 
     app.get("/decorators", verifyFBToken, async (req, res) => {
       try {
-        const { applicationStatus, city } = req.query;
-        const isAvailable = true;
+        const { city, serviceCategory } = req.query;
+
         const query =
           Object.keys(req.query).length === 0
             ? {}
-            : { applicationStatus, isAvailable, "serviceLocation.city": city };
+            : {
+                "applicationStatus": "approved",
+                "isAvailable": true,
+                "serviceLocation.city": city,
+                "specialization": serviceCategory,
+              };
 
         const decorators = await decoratorColl.find(query).toArray();
-        if (decorators.length === 0) {
-          return res.status(404).send({ message: "no data found" });
+
+        if (!decorators.length) {
+          return res.status(404).send({ message: "no decorators found" });
         }
+
         res.send(decorators);
       } catch (error) {
         console.error(error);
@@ -215,7 +392,7 @@ const runDB = async () => {
           return res.status(400).send({ message: "Invalid decorator id" });
         }
 
-        if (userId && !ObjectId.isValid(userId)) {
+        if (!userId || !ObjectId.isValid(userId)) {
           return res.status(400).send({ message: "Invalid user id" });
         }
 
@@ -385,7 +562,7 @@ const runDB = async () => {
           const id = req.params.bookingId;
           const { status, bookingType } = req.body;
           if (!id || bookingType !== "consultation") {
-            return res.status(403).send({ message: "invalid request" });
+            return res.status(400).send({ message: "invalid request" });
           }
           const updateFields = {
             $set: {
@@ -444,7 +621,7 @@ const runDB = async () => {
         console.error(error);
       }
     });
-
+    // admin only-------------admin only
     app.get("/bookings/admin", verifyFBToken, async (req, res) => {
       try {
         const allBookings = await bookingColl.find().toArray();
@@ -539,14 +716,15 @@ const runDB = async () => {
         const transactionId = session.payment_intent;
 
         const bookingUpdate = await bookingColl.updateOne(
-          { _id: new ObjectId(bookingId) },
+          { _id: new ObjectId(bookingId), paymentStatus: { $ne: "paid" } },
+
           {
-            $setOnInsert: {},
             $set: {
               status: "confirmed",
               paymentStatus: session.payment_status,
               transactionId,
               amountPaid: session.amount_total,
+              paymentSessionId: sessionId,
             },
           }
         );
