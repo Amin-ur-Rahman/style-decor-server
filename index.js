@@ -71,8 +71,11 @@ const runDB = async () => {
     const bookingColl = db.collection("bookings");
     const paymentColl = db.collection("paymentsHistory");
     const decoratorColl = db.collection("decorators");
+    const decoratorEarningColl = db.collection("decoratorEarnings");
 
     // indexing----------duplication protection
+
+    decoratorEarningColl.createIndex({ bookingId: 1 }, { unique: true });
 
     await paymentColl.createIndex(
       { bookingId: 1, transactionId: 1 },
@@ -136,21 +139,61 @@ const runDB = async () => {
     // ----------booking data for decorators----------- ----------booking data for decorators-----------
 
     app.get(
+      "/assigned-projects/:decoratorId",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const id = req.params.decoratorId;
+          const decorator = await decoratorColl.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!decorator || !decorator.assignedBookings?.length) {
+            return res.send({ message: "no data found" });
+          }
+
+          const bookingIds = decorator.assignedBookings.map(
+            (id) => new ObjectId(id)
+          );
+          const bookings = await bookingColl
+            .find({ _id: { $in: bookingIds } })
+            .toArray();
+
+          res.send(bookings);
+        } catch (error) {
+          res.status(500).send({ message: "Server error" });
+          console.error(error);
+        }
+      }
+    );
+
+    app.get(
       "/booking/:decoratorId/decorator",
       verifyFBToken,
       async (req, res) => {
         try {
           const decoId = req.params.decoratorId;
-          if (!decoId) {
-            return res.status(403).send({ message: "invalid request" });
+          if (!ObjectId.isValid(decoId)) {
+            return res.status(400).send({ message: "Invalid decorator ID" });
           }
-          const bookings = await bookingColl
-            .find({ assignedDecoratorId: decoId })
-            .toArray();
-          if (bookings.length === 0) {
-            return res.send({ message: "no data found" });
+          const decoratorData = await decoratorColl.findOne({
+            _id: new ObjectId(decoId),
+          });
+          if (!decoratorData) {
+            return res
+              .status(404)
+              .send({ message: "no decorator account found matching this ID" });
           }
-          res.send(bookings || []);
+          const currentBookingId = decoratorData.currentProject;
+          const currentProjectData = await bookingColl.findOne({
+            _id: new ObjectId(currentBookingId),
+          });
+          if (!currentProjectData) {
+            return res
+              .status(404)
+              .send({ message: "No current project data found" });
+          }
+          res.send({ decoratorData, currentProjectData });
         } catch (error) {
           res.status(500).send({ message: "Server error" });
           console.error(error);
@@ -162,50 +205,101 @@ const runDB = async () => {
 
     app.patch("/booking/status/flow", verifyFBToken, async (req, res) => {
       try {
-        const patchData = req.body;
-        const { nextBookingStatus, updatedAt, decoratorId, bookingId } =
-          patchData;
-        // on completion a project---------
+        const { nextBookingStatus, decoratorId, bookingId } = req.body;
 
-        // ------------------------
-        // console.log(patchData);
-        const updateField = {
-          $set: {
-            status: nextBookingStatus,
-            updatedAt: updatedAt,
-          },
-        };
+        const bookingObjectId = new ObjectId(bookingId);
+        const decoratorObjectId = new ObjectId(decoratorId);
+        const now = new Date();
 
-        const updateRes = await bookingColl.updateOne(
-          { _id: new ObjectId(bookingId) },
-          updateField
+        // -------------------- UPDATE BOOKING STATUS --------------------
+        const bookingUpdateRes = await bookingColl.updateOne(
+          { _id: bookingObjectId },
+          {
+            $set: {
+              status: nextBookingStatus,
+              updatedAt: now,
+            },
+          }
         );
 
-        if (nextBookingStatus === "completed") {
-          const decoUpField = {
-            $set: {
-              isAvailable: true,
-            },
-            $unset: {
-              currentBookingId: "",
-            },
-            $push: {
-              finishedProjectIDs: bookingId,
-            },
-          };
-          const decoDataUpdate = await decoratorColl.updateOne(
-            {
-              _id: new ObjectId(decoratorId),
-            },
-            decoUpField
-          );
-          console.log(decoDataUpdate);
+        if (bookingUpdateRes.matchedCount === 0) {
+          return res.status(404).send({ message: "Booking not found" });
         }
 
-        res.send({ message: "Booking Status updated", updateRes });
+        // -------------------- PLANNING --------------------
+        if (nextBookingStatus === "planning") {
+          await decoratorColl.updateOne(
+            { _id: decoratorObjectId },
+            {
+              $set: {
+                isAvailable: false,
+                currentProject: bookingId,
+                updatedAt: now,
+              },
+            }
+          );
+        }
+
+        // -------------------- COMPLETED --------------------
+        if (nextBookingStatus === "completed") {
+          const booking = await bookingColl.findOne(
+            { _id: bookingObjectId },
+            { projection: { amountPaid: 1 } }
+          );
+
+          if (!booking || !booking.amountPaid) {
+            return res
+              .status(400)
+              .send({ message: "Booking payment data missing" });
+          }
+
+          const commissionRate = 0.25;
+          const decoratorEarning = booking.amountPaid * commissionRate;
+
+          // updating decorator data
+          await decoratorColl.updateOne(
+            { _id: decoratorObjectId },
+            {
+              $set: {
+                isAvailable: true,
+                updatedAt: now,
+              },
+              $unset: {
+                currentProject: "",
+              },
+              $pull: {
+                assignedBookings: bookingId,
+              },
+              $addToSet: {
+                finishedProjectIDs: bookingId,
+              },
+            }
+          );
+
+          // creating earning data collection for decorators
+          await decoratorEarningColl.updateOne(
+            { bookingId: bookingObjectId },
+            {
+              $setOnInsert: {
+                bookingId: bookingObjectId,
+                decoratorId: decoratorObjectId,
+                servicePrice: booking.amountPaid,
+                commissionRate,
+                amountEarned: decoratorEarning,
+                paymentStatus: "pending",
+                createdAt: now,
+              },
+            },
+            { upsert: true }
+          );
+        }
+
+        res.send({
+          message: "Booking flow updated successfully",
+        });
       } catch (error) {
-        res.status(500).send({ message: "Server error" });
         console.error(error);
+        res.status(500).send({ message: "Server error" });
       }
     });
 
@@ -223,26 +317,20 @@ const runDB = async () => {
               .status(400)
               .send({ message: "bookingId and decoratorId are required" });
           }
-          console.log(bookingId, decoratorId);
 
-          // Update booking
+          console.log("Booking ID:", bookingId, "Decorator ID:", decoratorId);
+
+          // booking data update
           const bookingUpdate = await bookingColl.updateOne(
             {
               _id: new ObjectId(bookingId),
-              assignedDecoratorId: decoratorId,
+              assignedDecoratorIds: { $in: [decoratorId] },
             },
             {
-              $set: {
-                status: "awaiting-reassignment",
-                updatedAt: new Date(),
-              },
-              $push: {
-                rejectedBy: decoratorId,
-              },
-              $unset: {
-                assignedDecoratorId: "",
-                assignedAt: "",
-              },
+              $set: { status: "awaiting-reassignment", updatedAt: new Date() },
+              $addToSet: { rejectedBy: decoratorId },
+              $unset: { assignedAt: "" },
+              $pull: { assignedDecoratorIds: decoratorId },
             }
           );
 
@@ -252,12 +340,12 @@ const runDB = async () => {
               .send({ message: "Booking not found or decorator mismatch" });
           }
 
-          // Update decorator
+          //  decorator data update
           const decoratorUpdate = await decoratorColl.updateOne(
             { _id: new ObjectId(decoratorId) },
             {
               $set: { isAvailable: true },
-              $unset: { currentBookingId: "" },
+              $pull: { assignedBookings: bookingId },
             }
           );
 
@@ -265,16 +353,14 @@ const runDB = async () => {
             return res.status(404).send({ message: "Decorator not found" });
           }
 
-          res.send(
-            {
-              message:
-                "Project rejected by decorator. Booking ready for reassignment.",
-            },
+          res.send({
+            message:
+              "Project rejected by decorator. Booking ready for reassignment.",
+            bookingUpdate,
             decoratorUpdate,
-            bookingUpdate
-          );
+          });
         } catch (error) {
-          console.error(error);
+          console.error("Reject booking error:", error);
           res.status(500).send({ message: "Server error" });
         }
       }
@@ -351,6 +437,72 @@ const runDB = async () => {
         console.log(postDecoResult);
       } catch (error) {
         res.send(500).send({ message: "server error" });
+      }
+    });
+
+    app.patch(
+      "/decorator/:id/availability",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { isAvailable } = req.body;
+
+          if (typeof isAvailable !== "boolean") {
+            return res.status(400).json({
+              message: "isAvailable must be a boolean",
+            });
+          }
+
+          const result = await decoratorColl.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                isAvailable,
+                updatedAt: new Date(),
+              },
+            }
+          );
+
+          if (result.matchedCount === 0) {
+            return res.status(404).json({
+              message: "Decorator not found",
+            });
+          }
+
+          res.json({
+            success: true,
+            isAvailable,
+          });
+        } catch (error) {
+          console.error("Toggle availability error:", error);
+          res.status(500).json({
+            message: "Failed to update availability",
+          });
+        }
+      }
+    );
+
+    app.get("/decorator/:id", async (req, res) => {
+      const { id } = req.params;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid decorator ID" });
+      }
+
+      try {
+        const decorator = await decoratorColl.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!decorator) {
+          return res.status(404).json({ message: "Decorator not found" });
+        }
+
+        res.json(decorator);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server error" });
       }
     });
 
@@ -490,7 +642,7 @@ const runDB = async () => {
       }
     });
 
-    // -------- on assigning decorators
+    // -------- on assigning decorators-----------------on assigning decorators
 
     app.patch("/decorator/:id/assignment", verifyFBToken, async (req, res) => {
       try {
@@ -504,8 +656,11 @@ const runDB = async () => {
         const decoUpdate = {
           $set: {
             isAvailable: false,
-            currentBookingId: bookingId,
+            mostRecentBookingId: bookingId,
             updatedAt: new Date(),
+          },
+          $push: {
+            assignedBookings: bookingId,
           },
         };
 
@@ -516,10 +671,12 @@ const runDB = async () => {
 
         const bookingUpdate = {
           $set: {
-            assignedDecoratorId: decoId,
             status: "assigned",
             assignedAt: new Date(),
             updatedAt: new Date(),
+          },
+          $push: {
+            assignedDecoratorIds: decoId,
           },
         };
 
@@ -723,7 +880,7 @@ const runDB = async () => {
               status: "confirmed",
               paymentStatus: session.payment_status,
               transactionId,
-              amountPaid: session.amount_total,
+              amountPaid: session.amount_total / 100,
               paymentSessionId: sessionId,
             },
           }
@@ -765,7 +922,7 @@ const runDB = async () => {
       }
     });
 
-    // SERVICE related api
+    // SERVICE related api=============service related api
 
     app.post("/services", async (req, res) => {
       const serviceData = req.body;
@@ -774,6 +931,43 @@ const runDB = async () => {
         if (!result.insertedId) {
           return res.send({ message: "failed to add service" });
         }
+        res.send(result);
+        console.log(result);
+      } catch (error) {
+        res.status(500).send({ message: "server internal error" });
+        console.error(error);
+      }
+    });
+
+    app.patch("/service/:id", verifyFBToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        console.log(id);
+
+        const data = req.body;
+
+        const updateFields = {};
+
+        for (const key in data) {
+          if (
+            data[key] !== undefined &&
+            data[key] !== "" &&
+            data[key] !== null
+          ) {
+            updateFields[key] = data[key];
+          }
+        }
+
+        if (Object.keys(updateFields).length === 0) {
+          return res.status(400).send({ message: "No valid fields to update" });
+        }
+        console.log(updateFields);
+
+        const result = await serviceColl.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateFields }
+        );
+
         res.send(result);
         console.log(result);
       } catch (error) {
@@ -807,6 +1001,24 @@ const runDB = async () => {
       } catch (error) {
         res.status(500).send({ message: "Server error" });
         console.error(error);
+      }
+    });
+
+    app.delete("/service/:id", async (req, res) => {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid ID" });
+      }
+
+      try {
+        const result = await serviceColl.deleteOne({ _id: new ObjectId(id) });
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ message: "Service not found" });
+        }
+        res.status(200).json({ message: "Service deleted successfully" });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to delete service" });
       }
     });
 
