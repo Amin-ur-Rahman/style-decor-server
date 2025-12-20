@@ -1164,18 +1164,75 @@ const runDB = async () => {
     app.delete("/service/:id", async (req, res) => {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ message: "Invalid ID" });
+        return res.status(400).send({ message: "Invalid ID" });
       }
 
       try {
         const result = await serviceColl.deleteOne({ _id: new ObjectId(id) });
         if (result.deletedCount === 0) {
-          return res.status(404).json({ message: "Service not found" });
+          return res.status(404).send({ message: "Service not found" });
         }
-        res.status(200).json({ message: "Service deleted successfully" });
+        res.status(200).send({ message: "Service deleted successfully" });
       } catch (err) {
         console.error(err);
-        res.status(500).json({ message: "Failed to delete service" });
+        res.status(500).send({ message: "Failed to delete service" });
+      }
+    });
+
+    // ----------top decorators data---------------------trying aggregation
+
+    app.get("/top-decorators", async (req, res) => {
+      try {
+        const topDecorators = await decoratorColl
+          .aggregate([
+            {
+              $match: {
+                applicationStatus: "approved",
+                isVerified: true,
+                accountStatus: "active",
+              },
+            },
+            {
+              $addFields: {
+                completedCount: {
+                  $size: { $ifNull: ["$finishedProjectIDs", []] },
+                },
+              },
+            },
+            {
+              $project: {
+                decoratorName: 1,
+                photoUrl: 1,
+                serviceLocation: 1,
+                specialization: 1,
+                experienceYears: 1,
+                completedCount: 1,
+                ratingAverage: 1,
+                ratingCount: 1,
+              },
+            },
+            { $sort: { completedCount: -1 } },
+            { $limit: 4 },
+          ])
+          .toArray();
+
+        res.send(topDecorators || null);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // ------getting data for admin dashboard
+
+    app.get("/bookings/admin", verifyFBToken, async (req, res) => {
+      try {
+        const bookings = await bookingColl.find().toArray();
+
+        res.send(bookings);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
       }
     });
 
