@@ -139,6 +139,26 @@ const runDB = async () => {
     // ----------booking data for decorators----------- ----------booking data for decorators-----------
 
     app.get(
+      "/decorator-earnings/:decoratorId",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const id = req.params.decoratorId;
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "invalid request" });
+          }
+          const earningData = await decoratorEarningColl
+            .find({ decoratorId: new ObjectId(id) })
+            .toArray();
+          res.send(earningData || null);
+        } catch (error) {
+          res.status(500).send({ message: "Server error" });
+          console.error(error);
+        }
+      }
+    );
+
+    app.get(
       "/assigned-projects/:decoratorId",
       verifyFBToken,
       async (req, res) => {
@@ -520,6 +540,33 @@ const runDB = async () => {
       }
     });
 
+    // getting todays--------------
+    app.get(
+      "/decorator/:decoratorId/today-schedule",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const decoratorId = req.params.decoratorId;
+
+          if (!ObjectId.isValid(decoratorId)) {
+            return res.status(400).send({ message: "Inavlid request" });
+          }
+          const today = new Date().toISOString().split("T")[0];
+
+          const bookings = await bookingColl
+            .find({
+              assignedDecoratorIds: { $in: [decoratorId] },
+              scheduleDate: today,
+              status: { $nin: ["completed", "cancelled"] },
+            })
+            .toArray();
+          res.send(bookings || null);
+        } catch (error) {
+          res.send(500).send({ message: "server error" });
+        }
+      }
+    );
+
     app.patch(
       "/decorator/:id/availability",
       verifyFBToken,
@@ -579,7 +626,7 @@ const runDB = async () => {
           return res.status(404).json({ message: "Decorator not found" });
         }
 
-        res.json(decorator);
+        res.send(decorator || null);
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Server error" });
