@@ -222,6 +222,15 @@ const runDB = async () => {
               .send({ message: "no decorator account found matching this ID" });
           }
           const currentBookingId = decoratorData.currentProject;
+
+          // -----------checking if any current project exists
+          if (!currentBookingId || !ObjectId.isValid(currentBookingId)) {
+            return res.send({
+              decoratorData,
+              currentProjectData: null,
+            });
+          }
+
           const currentProjectData = await bookingColl.findOne({
             _id: new ObjectId(currentBookingId),
           });
@@ -230,7 +239,10 @@ const runDB = async () => {
               .status(404)
               .send({ message: "No current project data found" });
           }
-          res.send({ decoratorData, currentProjectData });
+          res.send({
+            decoratorData,
+            currentProjectData: currentProjectData || null,
+          });
         } catch (error) {
           res.status(500).send({ message: "Server error" });
           console.error(error);
@@ -857,6 +869,36 @@ const runDB = async () => {
       } catch (error) {
         res.status(500).send({ message: "server error: insertion failed" });
         console.error(error);
+      }
+    });
+
+    app.patch("/bookings/:bookingId", verifyFBToken, async (req, res) => {
+      try {
+        const id = req.params.bookingId;
+
+        if (!id || !ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "invalid request" });
+        }
+
+        const patchData = req.body;
+
+        if (!patchData || Object.keys(patchData).length === 0) {
+          return res.status(400).send({ message: "no data to update" });
+        }
+
+        const updateRes = await bookingColl.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: patchData }
+        );
+
+        if (updateRes.matchedCount === 0) {
+          return res.status(404).send({ message: "booking not found" });
+        }
+
+        res.status(200).send({ message: "booking updated successfully" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "server error: update failed" });
       }
     });
 
