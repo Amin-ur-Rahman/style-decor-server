@@ -1203,8 +1203,8 @@ const runDB = async () => {
         },
         customer_email: bookingData.bookedByEmail,
         mode: "payment",
-        success_url: `${process.env.CLIENT_URL}/dashboard/on-payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.CLIENT_URL}/dashboard/on-payment-cancel`,
+        success_url: `${process.env.CLIENT_SIDE_DOMAIN}/dashboard/on-payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.CLIENT_SIDE_DOMAIN}/dashboard/on-payment-cancel`,
       });
 
       res.send({ url: session.url });
