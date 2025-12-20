@@ -167,6 +167,43 @@ const runDB = async () => {
       }
     );
 
+    // ------------completed projects data fro decorator---------
+
+    app.get(
+      "/finished-bookings/:decoratorId/decorator",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const id = req.params.decoratorId;
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid decorator ID" });
+          }
+
+          const decoratorData = await decoratorColl.findOne(
+            { _id: new ObjectId(id) },
+            {
+              projection: { finishedProjectIDs: 1 },
+            }
+          );
+          const decoratorFinishedProjectIds = decoratorData.finishedProjectIDs;
+          const finishedProjects = await bookingColl
+            .find({
+              _id: {
+                $in: decoratorFinishedProjectIds.map((id) => new ObjectId(id)),
+              },
+            })
+            .toArray();
+
+          res.send(finishedProjects);
+        } catch (error) {
+          res.status(500).send({ message: "Server error" });
+          console.error(error);
+        }
+      }
+    );
+
+    // on going project data for decorator
+
     app.get(
       "/booking/:decoratorId/decorator",
       verifyFBToken,
@@ -207,17 +244,42 @@ const runDB = async () => {
       try {
         const { nextBookingStatus, decoratorId, bookingId } = req.body;
 
-        const bookingObjectId = new ObjectId(bookingId);
-        const decoratorObjectId = new ObjectId(decoratorId);
-        const now = new Date();
+        if (!ObjectId.isValid(bookingId) || !ObjectId.isValid(decoratorId)) {
+          return res.status(400).send("invalid booking ID / decorator ID");
+        }
+        if (!nextBookingStatus) {
+          res.status(400).send("booking status is missing");
+        }
+
+        const bookingWithDecoList = await bookingColl.findOne(
+          { _id: new ObjectId(bookingId) },
+          { projection: { assignedDecoratorIds: 1 } }
+        );
+        // console.log(bookingWithDecoList);
+        if (!bookingWithDecoList.assignedDecoratorIds.includes(decoratorId)) {
+          return res
+            .status(403)
+            .send({ message: "You don't have persmission to this operation" });
+        }
+
+        // if(bookingWithDecoList.assignedDecoratorIds.includes)
+
+        console.log(
+          "status",
+          nextBookingStatus,
+          "decoId",
+          typeof decoratorId,
+          "bookingId",
+          bookingId
+        );
 
         // -------------------- UPDATE BOOKING STATUS --------------------
         const bookingUpdateRes = await bookingColl.updateOne(
-          { _id: bookingObjectId },
+          { _id: new ObjectId(bookingId) },
           {
             $set: {
               status: nextBookingStatus,
-              updatedAt: now,
+              updatedAt: new Date(),
             },
           }
         );
@@ -229,12 +291,12 @@ const runDB = async () => {
         // -------------------- PLANNING --------------------
         if (nextBookingStatus === "planning") {
           await decoratorColl.updateOne(
-            { _id: decoratorObjectId },
+            { _id: new ObjectId(decoratorId) },
             {
               $set: {
                 isAvailable: false,
                 currentProject: bookingId,
-                updatedAt: now,
+                updatedAt: new Date(),
               },
             }
           );
@@ -243,9 +305,10 @@ const runDB = async () => {
         // -------------------- COMPLETED --------------------
         if (nextBookingStatus === "completed") {
           const booking = await bookingColl.findOne(
-            { _id: bookingObjectId },
-            { projection: { amountPaid: 1 } }
+            { _id: new ObjectId(bookingId) },
+            { projection: { amountPaid: 1, assignedDecoratorIds: 1 } }
           );
+          console.log("booking data from 274:", booking);
 
           if (!booking || !booking.amountPaid) {
             return res
@@ -256,13 +319,17 @@ const runDB = async () => {
           const commissionRate = 0.25;
           const decoratorEarning = booking.amountPaid * commissionRate;
 
+          // console.log(decoratorObjectId);
+
           // updating decorator data
-          await decoratorColl.updateOne(
-            { _id: decoratorObjectId },
+          console.log("288", decoratorId);
+
+          const decoUpdateRes = await decoratorColl.updateOne(
+            { _id: new ObjectId(decoratorId) },
             {
               $set: {
                 isAvailable: true,
-                updatedAt: now,
+                updatedAt: new Date(),
               },
               $unset: {
                 currentProject: "",
@@ -275,19 +342,20 @@ const runDB = async () => {
               },
             }
           );
+          console.log(decoUpdateRes);
 
           // creating earning data collection for decorators
           await decoratorEarningColl.updateOne(
-            { bookingId: bookingObjectId },
+            { bookingId: new ObjectId(bookingId) },
             {
               $setOnInsert: {
-                bookingId: bookingObjectId,
-                decoratorId: decoratorObjectId,
+                bookingId: new ObjectId(bookingId),
+                decoratorId: new ObjectId(decoratorId),
                 servicePrice: booking.amountPaid,
                 commissionRate,
                 amountEarned: decoratorEarning,
                 paymentStatus: "pending",
-                createdAt: now,
+                createdAt: new Date(),
               },
             },
             { upsert: true }
