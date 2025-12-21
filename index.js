@@ -200,10 +200,10 @@ const runDB = async () => {
         console.log(decoded_email);
 
         const userData = await usersColl.findOne({ userEmail: decoded_email });
-        if (!userData) {
-          return res.status(404).send({ message: "no data found 💀" });
-        }
-        res.send(userData);
+        // if (!userData) {
+        //   return res.status(404).send({ message: "no data found 💀" });
+        // }
+        res.send(userData || null);
       } catch (error) {
         res.status(500).send({ message: "Server error" });
         console.error(error);
