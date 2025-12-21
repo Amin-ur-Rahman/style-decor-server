@@ -34,24 +34,20 @@ const client = new MongoClient(uri, {
 });
 
 const verifyFBToken = async (req, res, next) => {
-  const authHeader = await req.headers.authorization;
-  // console.log("access token", token);
+  const authHeader = req.headers.authorization;
 
   if (!authHeader) {
-    return res.status(403).send({
-      message: "unauthorized access! stay away from making such request",
-    });
+    return res.status(401).send({ message: "unauthorized access" });
   }
 
   try {
     const token = authHeader.split(" ")[1];
-    // console.log("access token-------", token);
     const decoded = await admin.auth().verifyIdToken(token);
-    req.decoded_email = decoded.email;
 
+    req.decoded_email = decoded.email;
     next();
   } catch (err) {
-    res.status(403).send({ message: "unauthorized access" });
+    return res.status(401).send({ message: "unauthorized access" });
   }
 };
 
@@ -72,6 +68,85 @@ const runDB = async () => {
     const paymentColl = db.collection("paymentsHistory");
     const decoratorColl = db.collection("decorators");
     const decoratorEarningColl = db.collection("decoratorEarnings");
+
+    // admin middleware==============
+
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        const decodedEmail = req.decoded_email;
+
+        const user = await usersColl.findOne(
+          { userEmail: decodedEmail },
+          { projection: { role: 1 } }
+        );
+
+        if (!user) {
+          return res.status(401).send({ message: "user not found" });
+        }
+
+        if (user.role !== "admin") {
+          return res.status(403).send({ message: "forbidden request" });
+        }
+
+        next();
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "server error" });
+      }
+    };
+
+    //  ============decorator middleware====
+
+    const verifyDecorator = async (req, res, next) => {
+      const decoded_email = req.decoded_email;
+
+      try {
+        const user = await usersColl.findOne(
+          { userEmail: decoded_email },
+          { projection: { role: 1 } }
+        );
+
+        if (!user) {
+          return res.status(404).send({ message: "user not found" });
+        }
+
+        const isDecorator = user.role === "decorator";
+
+        if (!isDecorator) {
+          return res.status(403).send({ message: "forbidden request" });
+        }
+
+        next();
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "server error" });
+      }
+    };
+    const verifyDecoratorAndAdmin = async (req, res, next) => {
+      const decoded_email = req.decoded_email;
+
+      try {
+        const user = await usersColl.findOne(
+          { userEmail: decoded_email },
+          { projection: { role: 1 } }
+        );
+
+        if (!user) {
+          return res.status(404).send({ message: "user not found" });
+        }
+
+        if (user.role === "admin" || user.role === "decorator") {
+          return next();
+        }
+
+        return res
+          .status(403)
+          .send({ message: "forbidden: insufficient permissions" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "server error" });
+      }
+    };
 
     // indexing----------duplication protection
 
@@ -109,15 +184,15 @@ const runDB = async () => {
       }
     });
 
-    app.get("/users", verifyFBToken, async (req, res) => {
-      try {
-        const userData = await usersColl.find().toArray();
-        res.send(userData);
-      } catch (error) {
-        console.error(error);
-        res.status(404).send({ message: "data not found" });
-      }
-    });
+    // app.get("/users", verifyFBToken, async (req, res) => {
+    //   try {
+    //     const userData = await usersColl.find().toArray();
+    //     res.send(userData || null);
+    //   } catch (error) {
+    //     console.error(error);
+    //     res.status(404).send({ message: "data not found" });
+    //   }
+    // });
 
     app.get("/me", verifyFBToken, async (req, res) => {
       try {
@@ -141,6 +216,7 @@ const runDB = async () => {
     app.get(
       "/decorator-earnings/:decoratorId",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const id = req.params.decoratorId;
@@ -161,6 +237,7 @@ const runDB = async () => {
     app.get(
       "/assigned-projects/:decoratorId",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const id = req.params.decoratorId;
@@ -192,6 +269,7 @@ const runDB = async () => {
     app.get(
       "/finished-bookings/:decoratorId/decorator",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const id = req.params.decoratorId;
@@ -227,6 +305,7 @@ const runDB = async () => {
     app.get(
       "/booking/:decoratorId/decorator",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const decoId = req.params.decoratorId;
@@ -272,142 +351,148 @@ const runDB = async () => {
 
     // --------booking status management by assigned decorator-----------------------
 
-    app.patch("/booking/status/flow", verifyFBToken, async (req, res) => {
-      try {
-        const { nextBookingStatus, decoratorId, bookingId } = req.body;
+    app.patch(
+      "/booking/status/flow",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        try {
+          const { nextBookingStatus, decoratorId, bookingId } = req.body;
 
-        if (!ObjectId.isValid(bookingId) || !ObjectId.isValid(decoratorId)) {
-          return res.status(400).send("invalid booking ID / decorator ID");
-        }
-        if (!nextBookingStatus) {
-          res.status(400).send("booking status is missing");
-        }
-
-        const bookingWithDecoList = await bookingColl.findOne(
-          { _id: new ObjectId(bookingId) },
-          { projection: { assignedDecoratorIds: 1 } }
-        );
-        // console.log(bookingWithDecoList);
-        if (!bookingWithDecoList.assignedDecoratorIds.includes(decoratorId)) {
-          return res
-            .status(403)
-            .send({ message: "You don't have persmission to this operation" });
-        }
-
-        // if(bookingWithDecoList.assignedDecoratorIds.includes)
-
-        console.log(
-          "status",
-          nextBookingStatus,
-          "decoId",
-          typeof decoratorId,
-          "bookingId",
-          bookingId
-        );
-
-        // -------------------- UPDATE BOOKING STATUS --------------------
-        const bookingUpdateRes = await bookingColl.updateOne(
-          { _id: new ObjectId(bookingId) },
-          {
-            $set: {
-              status: nextBookingStatus,
-              updatedAt: new Date(),
-            },
+          if (!ObjectId.isValid(bookingId) || !ObjectId.isValid(decoratorId)) {
+            return res.status(400).send("invalid booking ID / decorator ID");
           }
-        );
+          if (!nextBookingStatus) {
+            res.status(400).send("booking status is missing");
+          }
 
-        if (bookingUpdateRes.matchedCount === 0) {
-          return res.status(404).send({ message: "Booking not found" });
-        }
-
-        // -------------------- PLANNING --------------------
-        if (nextBookingStatus === "planning") {
-          await decoratorColl.updateOne(
-            { _id: new ObjectId(decoratorId) },
-            {
-              $set: {
-                isAvailable: false,
-                currentProject: bookingId,
-                updatedAt: new Date(),
-              },
-            }
-          );
-        }
-
-        // -------------------- COMPLETED --------------------
-        if (nextBookingStatus === "completed") {
-          const booking = await bookingColl.findOne(
+          const bookingWithDecoList = await bookingColl.findOne(
             { _id: new ObjectId(bookingId) },
-            { projection: { amountPaid: 1, assignedDecoratorIds: 1 } }
+            { projection: { assignedDecoratorIds: 1 } }
           );
-          console.log("booking data from 274:", booking);
-
-          if (!booking || !booking.amountPaid) {
-            return res
-              .status(400)
-              .send({ message: "Booking payment data missing" });
+          // console.log(bookingWithDecoList);
+          if (!bookingWithDecoList.assignedDecoratorIds.includes(decoratorId)) {
+            return res.status(403).send({
+              message: "You don't have persmission to this operation",
+            });
           }
 
-          const commissionRate = 0.25;
-          const decoratorEarning = booking.amountPaid * commissionRate;
+          // if(bookingWithDecoList.assignedDecoratorIds.includes)
 
-          // console.log(decoratorObjectId);
+          console.log(
+            "status",
+            nextBookingStatus,
+            "decoId",
+            typeof decoratorId,
+            "bookingId",
+            bookingId
+          );
 
-          // updating decorator data
-          console.log("288", decoratorId);
-
-          const decoUpdateRes = await decoratorColl.updateOne(
-            { _id: new ObjectId(decoratorId) },
+          // -------------------- UPDATE BOOKING STATUS --------------------
+          const bookingUpdateRes = await bookingColl.updateOne(
+            { _id: new ObjectId(bookingId) },
             {
               $set: {
-                isAvailable: true,
+                status: nextBookingStatus,
                 updatedAt: new Date(),
-              },
-              $unset: {
-                currentProject: "",
-              },
-              $pull: {
-                assignedBookings: bookingId,
-              },
-              $addToSet: {
-                finishedProjectIDs: bookingId,
               },
             }
           );
-          console.log(decoUpdateRes);
 
-          // creating earning data collection for decorators
-          await decoratorEarningColl.updateOne(
-            { bookingId: new ObjectId(bookingId) },
-            {
-              $setOnInsert: {
-                bookingId: new ObjectId(bookingId),
-                decoratorId: new ObjectId(decoratorId),
-                servicePrice: booking.amountPaid,
-                commissionRate,
-                amountEarned: decoratorEarning,
-                paymentStatus: "pending",
-                createdAt: new Date(),
+          if (bookingUpdateRes.matchedCount === 0) {
+            return res.status(404).send({ message: "Booking not found" });
+          }
+
+          // -------------------- PLANNING --------------------
+          if (nextBookingStatus === "planning") {
+            await decoratorColl.updateOne(
+              { _id: new ObjectId(decoratorId) },
+              {
+                $set: {
+                  isAvailable: false,
+                  currentProject: bookingId,
+                  updatedAt: new Date(),
+                },
+              }
+            );
+          }
+
+          // -------------------- COMPLETED --------------------
+          if (nextBookingStatus === "completed") {
+            const booking = await bookingColl.findOne(
+              { _id: new ObjectId(bookingId) },
+              { projection: { amountPaid: 1, assignedDecoratorIds: 1 } }
+            );
+            console.log("booking data from 274:", booking);
+
+            if (!booking || !booking.amountPaid) {
+              return res
+                .status(400)
+                .send({ message: "Booking payment data missing" });
+            }
+
+            const commissionRate = 0.25;
+            const decoratorEarning = booking.amountPaid * commissionRate;
+
+            // console.log(decoratorObjectId);
+
+            // updating decorator data
+            console.log("288", decoratorId);
+
+            const decoUpdateRes = await decoratorColl.updateOne(
+              { _id: new ObjectId(decoratorId) },
+              {
+                $set: {
+                  isAvailable: true,
+                  updatedAt: new Date(),
+                },
+                $unset: {
+                  currentProject: "",
+                },
+                $pull: {
+                  assignedBookings: bookingId,
+                },
+                $addToSet: {
+                  finishedProjectIDs: bookingId,
+                },
+              }
+            );
+            console.log(decoUpdateRes);
+
+            // creating earning data collection for decorators
+            await decoratorEarningColl.updateOne(
+              { bookingId: new ObjectId(bookingId) },
+              {
+                $setOnInsert: {
+                  bookingId: new ObjectId(bookingId),
+                  decoratorId: new ObjectId(decoratorId),
+                  servicePrice: booking.amountPaid,
+                  commissionRate,
+                  amountEarned: decoratorEarning,
+                  paymentStatus: "pending",
+                  createdAt: new Date(),
+                },
               },
-            },
-            { upsert: true }
-          );
-        }
+              { upsert: true }
+            );
+          }
 
-        res.send({
-          message: "Booking flow updated successfully",
-        });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Server error" });
+          res.send({
+            message: "Booking flow updated successfully",
+          });
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
+        }
       }
-    });
+    );
 
     // if -------if booking rejected by decorator-----------------------
 
     app.patch(
       "/booking/reject-by-decorator",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const { bookingId, decoratorId } = req.body;
@@ -472,6 +557,7 @@ const runDB = async () => {
     app.get(
       "/booking-data/:decoId/completed",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const decoId = req.params.decoId;
@@ -506,7 +592,7 @@ const runDB = async () => {
             })
             .toArray();
 
-          res.send(completedProjects);
+          res.send(completedProjects || []);
         } catch (error) {
           console.error(error);
           res.status(500).send({ message: "Server error" });
@@ -544,6 +630,7 @@ const runDB = async () => {
     app.get(
       "/decorator/:decoratorId/today-schedule",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const decoratorId = req.params.decoratorId;
@@ -570,13 +657,14 @@ const runDB = async () => {
     app.patch(
       "/decorator/:id/availability",
       verifyFBToken,
+      verifyDecorator,
       async (req, res) => {
         try {
           const { id } = req.params;
           const { isAvailable } = req.body;
 
           if (typeof isAvailable !== "boolean") {
-            return res.status(400).json({
+            return res.status(400).send({
               message: "isAvailable must be a boolean",
             });
           }
@@ -592,48 +680,76 @@ const runDB = async () => {
           );
 
           if (result.matchedCount === 0) {
-            return res.status(404).json({
+            return res.status(404).send({
               message: "Decorator not found",
             });
           }
 
-          res.json({
+          res.send({
             success: true,
             isAvailable,
           });
         } catch (error) {
           console.error("Toggle availability error:", error);
-          res.status(500).json({
+          res.status(500).send({
             message: "Failed to update availability",
           });
         }
       }
     );
 
-    app.get("/decorator/:id", async (req, res) => {
-      const { id } = req.params;
+    app.get(
+      "/decorator/:id",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        const { id } = req.params;
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ message: "Invalid decorator ID" });
-      }
-
-      try {
-        const decorator = await decoratorColl.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!decorator) {
-          return res.status(404).json({ message: "Decorator not found" });
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid decorator ID" });
         }
 
-        res.send(decorator || null);
+        try {
+          const decorator = await decoratorColl.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!decorator) {
+            return res.status(404).send({ message: "Decorator not found" });
+          }
+
+          res.send(decorator || null);
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
+        }
+      }
+    );
+
+    // decorators availability and speciality data
+    app.get("/decorators/availability", verifyFBToken, async (req, res) => {
+      try {
+        const decorators = await decoratorColl
+          .find(
+            { isAvailable: true },
+            {
+              projection: {
+                isAvailable: 1,
+                specialization: 1,
+                decoratorName: 1,
+                serviceLocation: 1,
+              },
+            }
+          )
+          .toArray();
+        res.send(decorators || null);
       } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).send({ message: "server error" });
       }
     });
 
-    app.get("/decorators", verifyFBToken, async (req, res) => {
+    app.get("/decorators", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const { city, serviceCategory } = req.query;
 
@@ -649,11 +765,7 @@ const runDB = async () => {
 
         const decorators = await decoratorColl.find(query).toArray();
 
-        if (!decorators.length) {
-          return res.status(404).send({ message: "no decorators found" });
-        }
-
-        res.send(decorators);
+        res.send(decorators || []);
       } catch (error) {
         console.error(error);
         res.status(500).send({ message: "server error" });
@@ -662,185 +774,196 @@ const runDB = async () => {
 
     // ---------dashboard/manage-decorators--------
 
-    app.patch("/decorator/:id", verifyFBToken, async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { action, userId } = req.body;
+    app.patch(
+      "/decorator/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { action, userId } = req.body;
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid decorator id" });
-        }
-
-        if (!userId || !ObjectId.isValid(userId)) {
-          return res.status(400).send({ message: "Invalid user id" });
-        }
-
-        // ----disable--------------
-        if (action === "disable") {
-          const result = await decoratorColl.updateOne(
-            { _id: new ObjectId(id) },
-            {
-              $set: {
-                accountStatus: "disabled",
-                isAvailable: false,
-                disabledAt: new Date(),
-              },
-            }
-          );
-          return res.send(result);
-        }
-
-        // ---- enabling here----
-        if (action === "enable") {
-          const result = await decoratorColl.updateOne(
-            { _id: new ObjectId(id) },
-            {
-              $set: {
-                accountStatus: "active",
-                isAvailable: true,
-              },
-              $unset: { disabledAt: "" },
-            }
-          );
-          return res.send(result);
-        }
-
-        // ---- rejecting here ----
-        if (action === "reject") {
-          const result = await decoratorColl.updateOne(
-            { _id: new ObjectId(id), applicationStatus: "pending" },
-            {
-              $set: {
-                applicationStatus: "rejected",
-                isVerified: false,
-              },
-            }
-          );
-
-          if (result.matchedCount === 0) {
-            return res
-              .status(404)
-              .send({ message: "Decorator not found or already processed" });
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid decorator id" });
           }
 
-          return res.send({ message: "Application rejected" });
-        }
-
-        // ---- approving here ----
-        if (action === "approve") {
-          const decoratorResult = await decoratorColl.updateOne(
-            {
-              _id: new ObjectId(id),
-              applicationStatus: { $in: ["pending", "rejected"] },
-            },
-            {
-              $set: {
-                applicationStatus: "approved",
-                isVerified: true,
-                approvedAt: new Date(),
-              },
-            }
-          );
-
-          if (decoratorResult.matchedCount === 0) {
-            return res
-              .status(404)
-              .send({ message: "Decorator not found or already approved" });
+          if (!userId || !ObjectId.isValid(userId)) {
+            return res.status(400).send({ message: "Invalid user id" });
           }
 
-          const userResult = await usersColl.updateOne(
-            { _id: new ObjectId(userId) },
-            {
-              $set: {
-                role: "decorator",
-                decoratorId: id,
-                approvedAt: new Date().toLocaleDateString(),
-              },
+          // ----disable--------------
+          if (action === "disable") {
+            const result = await decoratorColl.updateOne(
+              { _id: new ObjectId(id) },
+              {
+                $set: {
+                  accountStatus: "disabled",
+                  isAvailable: false,
+                  disabledAt: new Date(),
+                },
+              }
+            );
+            return res.send(result);
+          }
+
+          // ---- enabling here----
+          if (action === "enable") {
+            const result = await decoratorColl.updateOne(
+              { _id: new ObjectId(id) },
+              {
+                $set: {
+                  accountStatus: "active",
+                  isAvailable: true,
+                },
+                $unset: { disabledAt: "" },
+              }
+            );
+            return res.send(result);
+          }
+
+          // ---- rejecting here ----
+          if (action === "reject") {
+            const result = await decoratorColl.updateOne(
+              { _id: new ObjectId(id), applicationStatus: "pending" },
+              {
+                $set: {
+                  applicationStatus: "rejected",
+                  isVerified: false,
+                },
+              }
+            );
+
+            if (result.matchedCount === 0) {
+              return res
+                .status(404)
+                .send({ message: "Decorator not found or already processed" });
             }
-          );
 
-          return res.send({ decoratorResult, userResult });
+            return res.send({ message: "Application rejected" });
+          }
+
+          // ---- approving here ----
+          if (action === "approve") {
+            const decoratorResult = await decoratorColl.updateOne(
+              {
+                _id: new ObjectId(id),
+                applicationStatus: { $in: ["pending", "rejected"] },
+              },
+              {
+                $set: {
+                  applicationStatus: "approved",
+                  isVerified: true,
+                  approvedAt: new Date(),
+                },
+              }
+            );
+
+            if (decoratorResult.matchedCount === 0) {
+              return res
+                .status(404)
+                .send({ message: "Decorator not found or already approved" });
+            }
+
+            const userResult = await usersColl.updateOne(
+              { _id: new ObjectId(userId) },
+              {
+                $set: {
+                  role: "decorator",
+                  decoratorId: id,
+                  approvedAt: new Date().toLocaleDateString(),
+                },
+              }
+            );
+
+            return res.send({ decoratorResult, userResult });
+          }
+
+          res.status(400).send({ message: "Invalid action" });
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
         }
-
-        res.status(400).send({ message: "Invalid action" });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Server error" });
       }
-    });
+    );
 
     // -------- on assigning decorators-----------------on assigning decorators
 
-    app.patch("/decorator/:id/assignment", verifyFBToken, async (req, res) => {
-      try {
-        const decoId = req.params.id;
-        const bookingId = req.body.bookingId;
+    app.patch(
+      "/decorator/:id/assignment",
+      verifyFBToken,
+      verifyDecorator,
+      async (req, res) => {
+        try {
+          const decoId = req.params.id;
+          const bookingId = req.body.bookingId;
 
-        if (!decoId || !bookingId) {
-          return res.status(400).send({ message: "Invalid request" });
+          if (!decoId || !bookingId) {
+            return res.status(400).send({ message: "Invalid request" });
+          }
+
+          const decoUpdate = {
+            $set: {
+              isAvailable: false,
+              mostRecentBookingId: bookingId,
+              updatedAt: new Date(),
+            },
+            $push: {
+              assignedBookings: bookingId,
+            },
+          };
+
+          const resultDeco = await decoratorColl.updateOne(
+            { _id: new ObjectId(decoId) },
+            decoUpdate
+          );
+
+          const bookingUpdate = {
+            $set: {
+              status: "assigned",
+              assignedAt: new Date(),
+              updatedAt: new Date(),
+            },
+            $push: {
+              assignedDecoratorIds: decoId,
+            },
+          };
+
+          const resultBooking = await bookingColl.updateOne(
+            { _id: new ObjectId(bookingId) },
+            bookingUpdate
+          );
+
+          if (resultDeco.matchedCount === 0) {
+            return res.status(404).send({ message: "no matching data found" });
+          }
+          if (resultDeco.modifiedCount === 0) {
+            return res.status(400).send({ message: "No changes were applied" });
+          }
+          if (resultBooking.matchedCount === 0) {
+            return res.status(404).send({ message: "no matching data found" });
+          }
+          if (resultBooking.modifiedCount === 0) {
+            return res.status(400).send({ message: "No changes were applied" });
+          }
+
+          res.send({
+            decoratorUpdate: `This decorator has been assigned to booking no. ${bookingId}`,
+            bookingUpdate: "This booking has been assigned",
+          });
+          console.log(resultBooking, resultDeco);
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ message: "Server error" });
         }
-
-        const decoUpdate = {
-          $set: {
-            isAvailable: false,
-            mostRecentBookingId: bookingId,
-            updatedAt: new Date(),
-          },
-          $push: {
-            assignedBookings: bookingId,
-          },
-        };
-
-        const resultDeco = await decoratorColl.updateOne(
-          { _id: new ObjectId(decoId) },
-          decoUpdate
-        );
-
-        const bookingUpdate = {
-          $set: {
-            status: "assigned",
-            assignedAt: new Date(),
-            updatedAt: new Date(),
-          },
-          $push: {
-            assignedDecoratorIds: decoId,
-          },
-        };
-
-        const resultBooking = await bookingColl.updateOne(
-          { _id: new ObjectId(bookingId) },
-          bookingUpdate
-        );
-
-        if (resultDeco.matchedCount === 0) {
-          return res.status(404).send({ message: "no matching data found" });
-        }
-        if (resultDeco.modifiedCount === 0) {
-          return res.status(400).send({ message: "No changes were applied" });
-        }
-        if (resultBooking.matchedCount === 0) {
-          return res.status(404).send({ message: "no matching data found" });
-        }
-        if (resultBooking.modifiedCount === 0) {
-          return res.status(400).send({ message: "No changes were applied" });
-        }
-
-        res.send({
-          decoratorUpdate: `This decorator has been assigned to booking no. ${bookingId}`,
-          bookingUpdate: "This booking has been assigned",
-        });
-        console.log(resultBooking, resultDeco);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Server error" });
       }
-    });
+    );
 
     // -------on confirming consultation---------
 
     app.patch(
       "/consultation/:bookingId/update",
       verifyFBToken,
+      verifyAdmin,
       async (req, res) => {
         try {
           const id = req.params.bookingId;
@@ -906,18 +1029,47 @@ const runDB = async () => {
       }
     });
     // admin only-------------admin only
-    app.get("/bookings/admin", verifyFBToken, async (req, res) => {
+    app.get("/bookings/admin", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const allBookings = await bookingColl.find().toArray();
-        if (allBookings.length === 0) {
-          return res.status(404).send({ message: "no data found" });
-        }
-        res.send(allBookings);
+
+        res.send(allBookings || []);
       } catch (error) {
         res.status(500).send({ message: "server error: insertion failed" });
         console.error(error);
       }
     });
+
+    // booking history with pagination----
+
+    app.get(
+      "/booking-history/admin",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { limit } = req.query;
+          const { page } = req.query;
+
+          console.log(limit, page);
+          const skip = page * limit;
+
+          const completedBookings = await bookingColl
+            .find({ status: "completed" })
+            .limit(parseInt(limit) || 0)
+            .skip(parseInt(skip) || 0)
+            .toArray();
+
+          const numberOfData = await bookingColl.countDocuments({
+            status: "completed",
+          });
+          res.send({ completedBookings, numberOfData });
+        } catch (error) {
+          res.status(500).send({ message: "server error " });
+          console.error(error);
+        }
+      }
+    );
 
     app.patch("/bookings/:bookingId", verifyFBToken, async (req, res) => {
       try {
@@ -983,10 +1135,8 @@ const runDB = async () => {
         const bookings = await bookingColl
           .find({ bookedByEmail: email })
           .toArray();
-        if (bookings.length === 0) {
-          return res.status(404).send({ message: "no data found" });
-        }
-        res.send(bookings);
+
+        res.send(bookings || []);
       } catch (error) {
         res.status(500).send({ message: "server error" });
         console.error(error);
@@ -994,6 +1144,21 @@ const runDB = async () => {
     });
 
     // -----------payment history related api
+
+    app.get(
+      "/payments/admin",
+      verifyFBToken,
+
+      async (req, res) => {
+        try {
+          const payments = await paymentColl.find().toArray();
+          res.send(payments || []);
+        } catch (error) {
+          res.status(500).send({ message: "server error" });
+          console.error(error);
+        }
+      }
+    );
 
     app.get("/payments", verifyFBToken, async (req, res) => {
       try {
@@ -1003,13 +1168,31 @@ const runDB = async () => {
           return res.status(403).send({ message: "forbidden request" });
         }
 
-        const paymentData = await paymentColl.find().toArray();
-        res.send(paymentData);
+        const paymentData = await paymentColl
+          .find({ clientEmail: decoded_email })
+          .toArray();
+        res.send(paymentData || []);
       } catch (error) {
         res.status(500).send({ message: "server error" });
         console.error(error);
       }
     });
+
+    // payment history for admin and decorator
+    app.get(
+      "payments/admin",
+      verifyFBToken,
+      verifyDecoratorAndAdmin,
+      async (req, res) => {
+        try {
+          const payments = await paymentColl.find().toArray();
+          res.send(payments || null);
+        } catch (error) {
+          res.status(500).send({ message: "server error" });
+          console.error(error);
+        }
+      }
+    );
 
     // --------------------on payment success------------booking data update, payment data entry
 
@@ -1081,7 +1264,7 @@ const runDB = async () => {
 
     // SERVICE related api=============service related api
 
-    app.post("/services", async (req, res) => {
+    app.post("/services", verifyFBToken, verifyAdmin, async (req, res) => {
       const serviceData = req.body;
       try {
         const result = await serviceColl.insertOne(serviceData);
@@ -1096,7 +1279,7 @@ const runDB = async () => {
       }
     });
 
-    app.patch("/service/:id", verifyFBToken, async (req, res) => {
+    app.patch("/service/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         console.log(id);
@@ -1143,6 +1326,46 @@ const runDB = async () => {
       }
     });
 
+    //  for search result--------------
+    app.get("/search", async (req, res) => {
+      try {
+        const query = req.query.q?.trim();
+        if (!query) {
+          return res.status(400).send({ message: "Search query is required" });
+        }
+
+        const servicesPromise = serviceColl
+          .find({ serviceName: { $regex: query, $options: "i" } })
+          .project({ serviceName: 1, cost: 1, serviceCategory: 1, photo: 1 })
+          .limit(10)
+          .toArray();
+
+        const decoratorsPromise = decoratorColl
+          .find({
+            decoratorName: { $regex: query, $options: "i" },
+            applicationStatus: "approved",
+            accountStatus: "active",
+          })
+          .project({
+            decoratorName: 1,
+            serviceLocation: 1,
+            photoUrl: 1,
+          })
+          .limit(10)
+          .toArray();
+
+        const [services, decorators] = await Promise.all([
+          servicesPromise,
+          decoratorsPromise,
+        ]);
+
+        res.send({ services, decorators });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
     app.get("/service/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -1161,7 +1384,7 @@ const runDB = async () => {
       }
     });
 
-    app.delete("/service/:id", async (req, res) => {
+    app.delete("/service/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
         return res.status(400).send({ message: "Invalid ID" });
@@ -1225,11 +1448,14 @@ const runDB = async () => {
 
     // ------getting data for admin dashboard
 
-    app.get("/bookings/admin", verifyFBToken, async (req, res) => {
+    app.get("/bookings/admin", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
-        const bookings = await bookingColl.find().toArray();
+        const bookings = await bookingColl
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
 
-        res.send(bookings);
+        res.send(bookings || []);
       } catch (err) {
         console.error(err);
         res.status(500).send({ message: "Server error" });
@@ -1238,7 +1464,7 @@ const runDB = async () => {
 
     // stripe api ------------------------
 
-    app.post("/create-checkout-session", async (req, res) => {
+    app.post("/create-checkout-session", verifyFBToken, async (req, res) => {
       const bookingData = req.body;
       const amount = parseInt(bookingData.payableAmount) * 100;
       const session = await stripe.checkout.sessions.create({
