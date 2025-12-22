@@ -1518,6 +1518,9 @@ runDB().catch(console.dir);
 app.get("/", (req, res) => {
   res.send("STYLEDECOR -- Server Connected");
 });
+app.get("/health", (req, res) => {
+  res.status(200).send({ status: "ok" });
+});
 
 app.listen(port, () => {
   console.log("styleDecor is running at port:", port);
