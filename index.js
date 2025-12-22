@@ -1319,7 +1319,7 @@ const runDB = async () => {
     app.get("/services", async (req, res) => {
       try {
         const result = await serviceColl.find().toArray();
-        res.send(result);
+        res.send(result || []);
       } catch (error) {
         res.status(500).send({ message: "server internal error" });
         console.error(error);
@@ -1499,7 +1499,7 @@ const runDB = async () => {
     app.get("/service-centers", async (req, res) => {
       try {
         const result = await serviceCentersColl.find().toArray();
-        res.send(result);
+        res.send(result || []);
       } catch (error) {
         console.error(error);
         res
